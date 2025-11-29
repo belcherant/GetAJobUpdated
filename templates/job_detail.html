@@ -1,0 +1,41 @@
+{% extends "layout.html" %}
+{% block title %}{{ job.title }} — GetAJob{% endblock %}
+
+{% block content %}
+<div style="display:flex; gap:18px;">
+  <div style="flex:1;">
+    <h2>{{ job.title }}</h2>
+    <div class="text-muted" style="margin-bottom:8px;">
+      {% if job.location_text %}{{ job.location_text | short_addr }}{% endif %}
+      {% if job.tags %} • {{ job.tags }}{% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Description</h3>
+      <div>{{ job.description }}</div>
+    </div>
+
+    <div style="margin-top:12px;">
+      {% if current_user.is_authenticated and (current_user.get_id()|int) != (job.employer_id|int) %}
+        <a class="btn btn-primary" href="{{ url_for('messages_page') }}?other_id={{ job.employer_id|int }}">Message Poster</a>
+      {% endif %}
+      {% if is_owner %}
+        <a class="btn btn-outline" href="{{ url_for('edit_job', job_id=job.id) }}">Edit</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <aside style="width:260px;">
+    <div class="card">
+      <div><strong>Employer</strong></div>
+      {# Use the employer object passed from the view instead of calling get_user_by_id from the template #}
+      {% if employer %}
+        <div>{{ employer.username or employer.first_name or employer.email }}</div>
+      {% else %}
+        <div><em>Employer account not available</em></div>
+      {% endif %}
+      <div style="margin-top:8px;"><small class="text-muted">Posted {{ job.created_at|date_only }}</small></div>
+    </div>
+  </aside>
+</div>
+{% endblock %}

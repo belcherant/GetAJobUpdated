@@ -1,0 +1,310 @@
+{% extends "layout.html" %}
+
+{% block title %}Jobs Map — GetAJob{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  .map-wrapper { display:flex; gap:12px; align-items:stretch; min-height:60vh; }
+  #map { flex:1; min-height:520px; height:calc(100vh - 220px); border-radius:8px; border:1px solid rgba(0,0,0,0.06); }
+  .sidebar { width:320px; max-width:34%; }
+  .sidebar .card { padding:8px; border-radius:8px; background:#fff; border:1px solid rgba(0,0,0,0.06); height:100%; overflow:auto; }
+  .job-list-mini { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; }
+  .job-list-mini a { display:block; padding:8px; border-radius:6px; text-decoration:none; color:var(--text); border:1px solid rgba(0,0,0,0.04); background:#fff; }
+  .job-empty { color:var(--muted); padding:12px; }
+  .map-controls { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; align-items:center; }
+  .map-controls input[type="search"], .map-controls select { padding:8px; border-radius:6px; border:1px solid rgba(0,0,0,0.08); }
+  .map-controls .btn { padding:8px 10px; border-radius:6px; }
+  .loc-marker { width:14px; height:14px; border-radius:50%; background:var(--primary); border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.12); }
+  .suggestions-list { position:relative; max-height:200px; overflow:auto; margin-top:6px; border:1px solid rgba(0,0,0,0.06); border-radius:6px; background:#fff; z-index:1000; }
+  .suggestions-list button { width:100%; text-align:left; padding:8px; border:0; background:transparent; cursor:pointer; }
+  @media (max-width:900px) {
+    .map-wrapper { flex-direction:column; }
+    .sidebar { width:100%; max-width:100%; }
+    #map { height:420px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="map-wrapper">
+  <div id="map" aria-label="Jobs map"></div>
+
+  <aside class="sidebar">
+    <div class="card">
+      <div class="map-controls" role="toolbar" aria-label="Map controls">
+        <button id="btnLocate" class="btn btn-outline" title="Use browser location">Locate me</button>
+
+        <div style="flex:1;">
+          <div class="search-suggestions">
+            <input id="addrSearch" type="search" placeholder="Search address or place..." style="width:100%;" />
+            <div id="suggestions" class="suggestions-list" style="display:none;"></div>
+          </div>
+        </div>
+
+        <select id="radiusSelect" title="Radius (miles)">
+          <option value="5">5 mi</option>
+          <option value="10" selected>10 mi</option>
+          <option value="25">25 mi</option>
+          <option value="50">50 mi</option>
+        </select>
+        <button id="btnApply" class="btn btn-primary">Search</button>
+      </div>
+
+      <h3 style="margin-top:6px;">Jobs nearby</h3>
+      <div id="jobsList"><div class="job-empty">Locating and loading jobs...</div></div>
+    </div>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/[&<>"']/g, function (m) {
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m];
+    });
+  }
+
+  const btnLocate = document.getElementById('btnLocate');
+  const addrSearch = document.getElementById('addrSearch');
+  const suggestionsEl = document.getElementById('suggestions');
+  const btnApply = document.getElementById('btnApply');
+  const radiusSelect = document.getElementById('radiusSelect');
+  const jobsListEl = document.getElementById('jobsList');
+
+  let map, markersLayer, userMarker, radiusCircle;
+  let currentCenter = { lat: 39.8283, lng: -98.5795 }; // default US center
+  let currentRadius = Number(radiusSelect.value) || 10; // miles
+
+  function initMapOnce() {
+    if (!window.L || !window.L.map) return;
+    if (window.__jobs_map_inited) return;
+    window.__jobs_map_inited = true;
+
+    map = L.map('map').setView([currentCenter.lat, currentCenter.lng], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+
+    markersLayer = L.layerGroup().addTo(map);
+
+    userMarker = L.circleMarker([currentCenter.lat, currentCenter.lng], {
+      radius: 8,
+      fillColor: window.getComputedStyle(document.documentElement).getPropertyValue('--primary') || '#0ea5a4',
+      color: '#fff',
+      weight: 2,
+      opacity: 1,
+      fillOpacity: 1,
+    }).addTo(map);
+    userMarker.setStyle({ opacity: 0, fillOpacity: 0 });
+
+    // wire controls
+    btnLocate.addEventListener('click', locateAndApply);
+    btnApply.addEventListener('click', () => {
+      currentRadius = Number(radiusSelect.value) || currentRadius;
+      // If user has been located, use that center; otherwise use map center
+      const center = map ? map.getCenter() : {lat: currentCenter.lat, lng: currentCenter.lng};
+      currentCenter.lat = center.lat;
+      currentCenter.lng = center.lng;
+      loadJobsAndRender(currentCenter.lat, currentCenter.lng, currentRadius);
+    });
+    radiusSelect.addEventListener('change', () => {
+      // update radius immediately if a center exists
+      currentRadius = Number(radiusSelect.value) || currentRadius;
+      if (currentCenter && currentCenter.lat && currentCenter.lng) {
+        loadJobsAndRender(currentCenter.lat, currentCenter.lng, currentRadius);
+      }
+    });
+
+    let debounceTimer = null;
+    addrSearch.addEventListener('input', function () {
+      clearTimeout(debounceTimer);
+      const q = (this.value || '').trim();
+      if (!q) {
+        suggestionsEl.style.display = 'none';
+        suggestionsEl.innerHTML = '';
+        return;
+      }
+      debounceTimer = setTimeout(() => doAddressLookup(q), 300);
+    });
+
+    // initial locate flow
+    (async function initialLocate() {
+      const ok = await tryBrowserGeolocation();
+      if (!ok) {
+        try {
+          const resp = await fetch('/_client_location');
+          const j = await resp.json();
+          if (j && j.ok && j.lat && j.lon) {
+            currentCenter.lat = j.lat;
+            currentCenter.lng = j.lon;
+            setUserLocationMarker(j.lat, j.lon, true);
+            currentRadius = Number(radiusSelect.value) || currentRadius;
+            loadJobsAndRender(currentCenter.lat, currentCenter.lng, currentRadius);
+            return;
+          }
+        } catch (e) { console.warn('IP geolookup failed', e); }
+        // no location available; load all jobs (unfiltered)
+        loadJobsAndRender();
+      }
+    })();
+  }
+
+  async function locateAndApply() {
+    const ok = await tryBrowserGeolocation();
+    if (!ok) {
+      alert('Unable to get browser location. Check permissions.');
+    }
+  }
+
+  async function tryBrowserGeolocation() {
+    if (!navigator.geolocation) return false;
+    return new Promise(resolve => {
+      let settled = false;
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        settled = true;
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        currentCenter.lat = lat;
+        currentCenter.lng = lng;
+        currentRadius = Number(radiusSelect.value) || currentRadius;
+        setUserLocationMarker(lat, lng, true);
+        // prefer centering on user (not fitting to markers)
+        map.setView([lat, lng], 13);
+        await loadJobsAndRender(lat, lng, currentRadius);
+        resolve(true);
+      }, (err) => {
+        console.warn('geolocation error', err);
+        if (!settled) resolve(false);
+      }, { maximumAge: 60 * 1000, timeout: 8000, enableHighAccuracy: false });
+      setTimeout(() => { if (!settled) resolve(false); }, 9000);
+    });
+  }
+
+  function setUserLocationMarker(lat, lng, show=true) {
+    if (!userMarker) return;
+    userMarker.setLatLng([lat, lng]);
+    if (show) {
+      userMarker.setStyle({ opacity: 1, fillOpacity: 1 });
+      // draw/update radius circle
+      if (radiusCircle) map.removeLayer(radiusCircle);
+      radiusCircle = L.circle([lat, lng], { radius: (currentRadius || 10) * 1609.344, color: '#0077ff', opacity: 0.12, weight: 1, fillOpacity: 0.04 }).addTo(map);
+    } else {
+      userMarker.setStyle({ opacity: 0, fillOpacity: 0 });
+      if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+    }
+  }
+
+  async function doAddressLookup(q) {
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=6&q=' + encodeURIComponent(q);
+    try {
+      const resp = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+      const arr = await resp.json();
+      suggestionsEl.innerHTML = '';
+      if (!Array.isArray(arr) || arr.length === 0) { suggestionsEl.style.display = 'none'; return; }
+      arr.forEach(item => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.innerHTML = escapeHtml(item.display_name);
+        btn.addEventListener('click', function () {
+          const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
+          currentCenter.lat = lat;
+          currentCenter.lng = lon;
+          setUserLocationMarker(lat, lon, true);
+          suggestionsEl.style.display = 'none';
+          suggestionsEl.innerHTML = '';
+          addrSearch.value = item.display_name;
+          currentRadius = Number(radiusSelect.value) || currentRadius;
+          map.setView([lat, lon], 13);
+          loadJobsAndRender(lat, lon, currentRadius);
+        });
+        suggestionsEl.appendChild(btn);
+      });
+      suggestionsEl.style.display = 'block';
+    } catch (e) {
+      console.error('address lookup failed', e);
+      suggestionsEl.style.display = 'none';
+    }
+  }
+
+  async function loadJobsAndRender(lat=null, lng=null, radius=null) {
+    try {
+      let url = '/api/jobs';
+      if (lat !== null && lng !== null) {
+        url = '/api/jobs_nearby?lat=' + encodeURIComponent(lat) + '&lng=' + encodeURIComponent(lng);
+        if (radius) url += '&radius_miles=' + encodeURIComponent(radius);
+      }
+      const resp = await fetch(url);
+      if (!resp.ok) { jobsListEl.innerHTML = '<div class="job-empty">Unable to load jobs</div>'; return; }
+      const j = await resp.json();
+      const jobs = (j.jobs || []);
+      renderJobsOnMap(jobs, lat, lng);
+    } catch (e) {
+      console.error('loadJobsAndRender error', e);
+      jobsListEl.innerHTML = '<div class="job-empty">Error loading jobs</div>';
+    }
+  }
+
+  function renderJobsOnMap(jobs, centerLat=null, centerLng=null) {
+    markersLayer.clearLayers();
+    if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+
+    jobsListEl.innerHTML = '';
+    if (!jobs || jobs.length === 0) {
+      jobsListEl.innerHTML = '<div class="job-empty">No jobs available.</div>';
+      if (centerLat && centerLng) map.setView([centerLat, centerLng], 11);
+      return;
+    }
+
+    let listHtml = '';
+    const layers = [];
+    jobs.forEach(job => {
+      const lat = job.lat !== null ? Number(job.lat) : null;
+      const lng = job.lng !== null ? Number(job.lng) : null;
+      const displayLoc = job.short_location || (job.location_text||'').split(',').slice(0,2).join(', ');
+      const popupHtml = '<div><strong>' + escapeHtml(job.title||'') + '</strong>' +
+                        '<div style="font-size:12px;color:#666;margin-top:4px;">' + escapeHtml(displayLoc) + (job.distance_miles ? (' • ' + job.distance_miles + ' mi') : '') + '</div>' +
+                        '<div style="margin-top:8px;">' + escapeHtml((job.description||'').substring(0,200)) + (job.description && job.description.length > 200 ? '...' : '') + '</div>' +
+                        '<div style="margin-top:6px;"><a href="/job/' + encodeURIComponent(job.id) + '">View job</a> • ' +
+                        '<a href="/messages?other_id=' + encodeURIComponent(job.employer_id) + '">Message Poster</a></div></div>';
+      if (lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng)) {
+        const marker = L.marker([lat, lng]).addTo(markersLayer);
+        marker.bindPopup(popupHtml);
+        layers.push(marker);
+      }
+      listHtml += '<a href="/job/' + encodeURIComponent(job.id) + '"><strong>' + escapeHtml(job.title||'') + '</strong>' +
+                  '<div style="font-size:12px;color:#666;margin-top:4px;">' + escapeHtml(displayLoc) + (job.distance_miles ? (' • ' + job.distance_miles + ' mi') : '') + '</div></a>';
+    });
+
+    jobsListEl.innerHTML = '<div class="job-list-mini">' + listHtml + '</div>';
+
+    if (centerLat !== null && centerLng !== null) {
+      // If we have user/search center: show radius circle and center map on user
+      radiusCircle = L.circle([centerLat, centerLng], { radius: (currentRadius || 10) * 1609.344, color: '#0077ff', opacity: 0.12, weight: 1, fillOpacity: 0.04 }).addTo(map);
+      // Ensure user marker visible (setUserLocationMarker should have been called already)
+      map.setView([centerLat, centerLng], 13);
+      // If you want to also fit to markers within the radius, you could compute bounds of layers and fit if desired.
+      // We'll keep view centered on user to avoid "zoom to nearest job" behavior.
+    } else {
+      // No center provided — fit to markers so user sees all jobs
+      if (layers.length > 0) {
+        try {
+          const group = L.featureGroup(layers);
+          map.fitBounds(group.getBounds().pad(0.12));
+        } catch (e) {
+          console.warn('fitBounds failed', e);
+        }
+      }
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initMapOnce);
+  } else {
+    setTimeout(initMapOnce, 50);
+  }
+})();
+</script>
+{% endblock %}
