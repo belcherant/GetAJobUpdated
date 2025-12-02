@@ -1,20 +1,40 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{{ user.username or user.email }} — Profile</title>
-  <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding:18px; background:#f7f8fb; }
-    .card { max-width:820px; margin:0 auto; background:#fff; padding:18px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,0.04); }
-    .meta { color:#666; margin-top:6px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>{{ user.username or (user.first_name ~ ' ' ~ user.last_name) or user.email }}</h2>
-    <div class="meta">
-      Role: <strong>{{ role_display(user.role) }}</strong>
-      {% if user.first_name or user.last_name %} • Name: {{ user.first_name }} {{ user.last_name }}{% endif %}
+{% extends "layout.html" %}
+{% block title %}Profile — {{ user.username or user.email }}{% endblock %}
+
+{% block content %}
+  <div class="card" style="max-width:900px;margin:0 auto;padding:18px;">
+    {# Safe display name #}
+    {% set uname = user.username|default('', true) %}
+    {% set fname = user.first_name|default('', true) %}
+    {% set lname = user.last_name|default('', true) %}
+    {% set fullname = (fname ~ ' ' ~ lname).strip() %}
+    {% set display_name = uname or fullname or user.email %}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 style="margin:0;">{{ display_name }}</h2>
+        <div class="meta" style="color:#666;margin-top:6px;">
+          <span>Role: <strong>{{ role_display(user.role) }}</strong></span>
+          {% if user.verified %}
+            <span style="margin-left:8px;color:green;font-weight:600;">• Verified</span>
+          {% endif %}
+          {% if user.is_banned %}
+            <span style="margin-left:8px;color:#b00;font-weight:600;">• Banned</span>
+            {% if user.banned_until %}<small style="color:#b00"> until {{ user.banned_until|date_only }}</small>{% endif %}
+          {% endif %}
+        </div>
+        {% if fullname %}
+          <div style="color:#444;margin-top:6px;">{{ fullname }}</div>
+        {% endif %}
+      </div>
+
+      <div style="text-align:right;">
+        {% if current_user.is_authenticated and (current_user.get_id()|int) == (user.id|default(0)|int) %}
+          <a class="btn btn-outline" href="{{ url_for('edit_profile') if (url_for('edit_profile', _external=False) is not none) else url_for('profile') }}">Edit profile</a>
+        {% else %}
+          <a class="btn btn-outline" href="{{ url_for('messages_page') }}?other_id={{ user.id }}">Message</a>
+        {% endif %}
+      </div>
     </div>
 
     <hr>
@@ -24,13 +44,46 @@
 
     {% if ratings %}
       <h3>Ratings</h3>
-      <ul>
+      <ul style="padding-left:0; list-style:none;">
         {% for r in ratings %}
-          <li>{{ r.rating }} / 5 — {{ r.comment or '' }} <small>by user {{ r.rater_id }}</small></li>
+          <li style="padding:10px 0;border-bottom:1px solid #f0f0f0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <strong>{{ r.rating }} / 5</strong>
+                {% if r.comment %} — <span>{{ r.comment }}</span>{% endif %}
+                <div style="color:#666;font-size:0.9rem;margin-top:6px;">by user {{ r.rater_id }} on {{ r.created_at|date_only }}</div>
+              </div>
+            </div>
+          </li>
         {% endfor %}
       </ul>
-      <div>Average rating: {{ avg_rating or 'N/A' }}</div>
+      <div style="margin-top:8px;">Average rating: {{ avg_rating.avg if avg_rating and avg_rating.avg is not none else (avg_rating or 'N/A') }}</div>
     {% endif %}
+
+    {# Rating form: only show if signed-in user is NOT the profile owner #}
+    {% if current_user.is_authenticated and (current_user.get_id()|int) != (user.id|default(0)|int) %}
+      <hr>
+      <h3>Leave a rating</h3>
+      <form action="{{ url_for('submit_rating') }}" method="post">
+        <input type="hidden" name="target_type" value="user">
+        <input type="hidden" name="target_id" value="{{ user.id }}">
+        <div style="display:flex;gap:12px;align-items:center;">
+          <label for="rating">Rating:</label>
+          <select name="rating" id="rating">
+            <option>5</option><option>4</option><option>3</option><option>2</option><option>1</option>
+          </select>
+        </div>
+        <div style="margin-top:8px;">
+          <label for="comment">Comment (optional)</label><br>
+          <textarea id="comment" name="comment" rows="3" style="width:100%;"></textarea>
+        </div>
+        <div style="margin-top:8px;">
+          <button class="btn btn-primary" type="submit">Submit rating</button>
+        </div>
+      </form>
+    {% endif %}
+  </div>
+{% endblock %}
   </div>
 </body>
 </html>
