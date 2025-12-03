@@ -7,6 +7,9 @@ import sqlite3
 import smtplib
 from datetime import datetime, timedelta
 from email.message import EmailMessage
+from werkzeug.utils import secure_filename
+from flask import send_from_directory, abort
+
 
 import requests
 from flask import (
@@ -117,17 +120,34 @@ def load_user(user_id):
     row = get_user_by_id(app.config["DATABASE"], int(user_id))
     if not row:
         return None
-    return User(
-        id=row["id"],
-        email=row["email"],
-        role=row.get("role", "contractor"),  # default changed to contractor
-        is_banned=row.get("is_banned", 0),
-        banned_until=row.get("banned_until"),
-        username=row.get("username"),
-        first_name=row.get("first_name"),
-        last_name=row.get("last_name"),
-        verified=row.get("verified", 0),
-    )
+
+    # If get_user_by_id returns a mapping-like (sqlite3.Row), use keys
+    try:
+        return User(
+            id=row["id"],
+            email=row["email"],
+            role=row.get("role", "contractor"),
+            is_banned=row.get("is_banned", False),
+            banned_until=row.get("banned_until"),
+            username=row.get("username"),
+            first_name=row.get("first_name"),
+            last_name=row.get("last_name"),
+            verified=row.get("verified", 0),
+        )
+    except Exception:
+        # Fallback for tuple-like rows (use the SELECT order from models.get_user_by_id)
+        # SELECT id, email, role, is_banned, banned_until, created_at, username, first_name, last_name, verified
+        return User(
+            id=row[0],
+            email=row[1],
+            role=row[2],
+            is_banned=row[3],
+            banned_until=row[4],
+            username=row[6],
+            first_name=row[7],
+            last_name=row[8],
+            verified=row[9],
+        )
 
 
 def require_roles(*roles):
@@ -528,6 +548,47 @@ def signin():
 
     return render_template("signin.html")
 
+@app.route("/rate/user/<int:user_id>", methods=["POST"])
+@login_required
+def rate_user(user_id):
+    # Prevent users rating themselves
+    try:
+        current_id = int(current_user.get_id())
+    except Exception:
+        flash("Invalid user.", "danger")
+        return redirect(url_for("index"))
+
+    if current_id == user_id:
+        flash("You cannot rate yourself.", "warning")
+        return redirect(url_for("profile", user_id=user_id))
+
+    # Validate target exists
+    row = get_user_by_id(app.config["DATABASE"], user_id)
+    if not row:
+        flash("User not found.", "warning")
+        return redirect(url_for("index"))
+
+    # Parse rating
+    try:
+        rating = int(request.form.get("rating", 0))
+    except Exception:
+        rating = 0
+
+    if rating < 1 or rating > 5:
+        flash("Rating must be between 1 and 5.", "danger")
+        return redirect(url_for("profile", user_id=user_id))
+
+    comment = (request.form.get("comment") or "").strip() or None
+
+    # create_rating(db_path, target_type, target_id, rater_id, rating, comment=None)
+    try:
+        create_rating(app.config["DATABASE"], "user", user_id, current_id, rating, comment)
+        flash("Rating submitted.", "success")
+    except Exception as e:
+        # Defensive: report an error if DB insert fails
+        flash("Unable to save rating.", "danger")
+
+    return redirect(url_for("profile", user_id=user_id))
 
 @app.route("/resend-verify", methods=["POST"])
 def resend_verify():
@@ -623,6 +684,173 @@ def logout():
     flash("Signed out.", "info")
     return redirect(url_for("index"))
 
+# Add this download route to serve uploaded PDFs.
+from flask import send_from_directory, abort
+import os
+
+@app.route("/uploads/<path:filename>")
+@login_required
+def uploaded_file(filename):
+    """
+    Serve uploaded PDF files saved in UPLOAD_DIR.
+    - Only one uploaded_file route must exist.
+    - filename should be the saved filename (not a path). Templates should pass basename.
+    - Returns 404 if file missing.
+    """
+    # Security: only use basename to avoid path traversal
+    safe_name = os.path.basename(filename)
+    full_path = os.path.join(UPLOAD_DIR, safe_name)
+    if not os.path.isfile(full_path):
+        abort(404)
+    return send_from_directory(UPLOAD_DIR, safe_name, as_attachment=False)
+
+# Replace existing /apply/<job_id> and /uploads/<filename> routes with these implementations.
+
+def _save_uploaded(f):
+    """
+    Save uploaded file to UPLOAD_DIR and return the saved filename (not a path).
+    Returns None if file invalid or save failed.
+    """
+    if not f or f.filename == "":
+        return None
+    filename = secure_filename(f.filename)
+    base, ext = os.path.splitext(filename)
+    ext = ext.lower()
+    if ext != ".pdf":
+        return None
+    # extra mime check if provided
+    if f.content_type and not any(m in f.content_type for m in ALLOWED_MIMES):
+        return None
+    # unique filename
+    ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    try:
+        uid = int(current_user.get_id())
+    except Exception:
+        uid = "anon"
+    filename_unique = f"{ts}_u{uid}_{base}{ext}"
+    dest_path = os.path.join(UPLOAD_DIR, filename_unique)
+    try:
+        f.save(dest_path)
+    except Exception as e:
+        app.logger.exception("Failed to save uploaded file: %s", e)
+        return None
+    return filename_unique
+
+@app.route("/apply/<int:job_id>", methods=["POST"])
+@login_required
+def apply_job(job_id):
+    """
+    Apply for a job (contractors only). Prevents self-application and duplicate apps.
+    Saves uploaded PDF cover_letter_file and resume_file (if provided) into UPLOAD_DIR via _save_uploaded,
+    stores the saved filenames in the DB using create_application(..., cover_letter_path=..., resume_path=...).
+    """
+    # Ensure current_user id is valid
+    try:
+        current_id = int(current_user.get_id())
+    except Exception:
+        flash("Invalid user.", "danger")
+        return redirect(url_for("index"))
+
+    # Enforce role == contractor
+    role = getattr(current_user, "role", None)
+    if role is None:
+        try:
+            role = current_user.role
+        except Exception:
+            role = None
+    if str(role).lower() != "contractor":
+        flash("Only contractors can apply for jobs.", "warning")
+        return redirect(url_for("job_detail", job_id=job_id))
+
+    # Ensure job exists
+    job = get_job_by_id(app.config["DATABASE"], job_id)
+    if not job:
+        flash("Job not found.", "warning")
+        return redirect(url_for("jobs_list"))
+
+    # Prevent applying to your own job
+    try:
+        employer_id = int(job.get("employer_id") if isinstance(job, dict) else job.employer_id)
+    except Exception:
+        employer_id = job.get("employer_id") if isinstance(job, dict) else getattr(job, "employer_id", None)
+    if employer_id is not None and int(employer_id) == current_id:
+        flash("You cannot apply to your own job.", "warning")
+        return redirect(url_for("job_detail", job_id=job_id))
+
+    # Prevent duplicate applications
+    try:
+        apps = get_applications_by_job(app.config["DATABASE"], job_id) or []
+    except Exception:
+        apps = []
+    for a in apps:
+        try:
+            if int(a.get("user_id") or a["user_id"]) == current_id:
+                flash("You have already applied for this job.", "info")
+                return redirect(url_for("job_detail", job_id=job_id))
+        except Exception:
+            continue
+
+    # Save uploaded files (uses _save_uploaded helper which should be defined once)
+    cover_file = request.files.get("cover_letter_file")
+    resume_file = request.files.get("resume_file")
+
+    cover_letter_filename = None
+    resume_filename = None
+
+    try:
+        cover_letter_filename = _save_uploaded(cover_file)
+    except Exception:
+        cover_letter_filename = None
+
+    try:
+        resume_filename = _save_uploaded(resume_file)
+    except Exception:
+        resume_filename = None
+
+    # Legacy textual fields (still accepted)
+    cover_letter_text = (request.form.get("cover_letter") or "").strip() or None
+    resume_text = (request.form.get("resume_text") or "").strip() or None
+
+    # Save application to DB (store filenames)
+    try:
+        create_application(
+            app.config["DATABASE"],
+            job_id,
+            current_id,
+            cover_letter=cover_letter_text,
+            resume_text=resume_text,
+            cover_letter_path=cover_letter_filename,
+            resume_path=resume_filename,
+        )
+    except Exception:
+        # fallback to older signature if present
+        try:
+            create_application(app.config["DATABASE"], job_id, current_id, cover_letter_text, resume_text)
+        except Exception:
+            flash("Unable to save your application. Please try again.", "danger")
+            return redirect(url_for("job_detail", job_id=job_id))
+
+    # Notify employer (best-effort)
+    try:
+        employer = get_user_by_id(app.config["DATABASE"], int(employer_id))
+        if employer and employer.get("email"):
+            subject = f"New application for: {job.get('title') or job.title}"
+            applicant_name = getattr(current_user, "username", None) or getattr(current_user, "first_name", "") or current_user.email
+            job_url = url_for("job_detail", job_id=job_id, _external=True)
+            text_body = f"{applicant_name} has applied for your job '{job.get('title') or job.title}'.\n\nView job: {job_url}"
+            html_body = f"<p><strong>{applicant_name}</strong> has applied for your job '<em>{job.get('title') or job.title}</em>'.</p><p><a href='{job_url}'>View job</a></p>"
+            send_email("New application on Jobsite", employer.get("email"), html_body=html_body, text_body=text_body)
+    except Exception:
+        pass
+
+    flash("Application submitted. It will appear on your applications page.", "success")
+    try:
+        return redirect(url_for("contractor_dashboard"))
+    except Exception:
+        try:
+            return redirect(url_for("profile"))
+        except Exception:
+            return redirect(url_for("job_detail", job_id=job_id))
 
 @app.route("/profile")
 @app.route("/profile/<int:user_id>")
@@ -669,6 +897,42 @@ def haversine_miles(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+@app.route("/job/<int:job_id>/applicants")
+@login_required
+def job_applicants(job_id):
+    """
+    Owner-only view: list all applications for a given job, including uploaded files and applicant email.
+    """
+    # current user id
+    try:
+        current_id = int(current_user.get_id())
+    except Exception:
+        flash("Invalid user.", "danger")
+        return redirect(url_for("index"))
+
+    # Load job
+    job = get_job_by_id(app.config["DATABASE"], job_id)
+    if not job:
+        flash("Job not found.", "warning")
+        return redirect(url_for("jobs_list"))
+
+    # Determine job owner id robustly
+    employer_id = job.get("employer_id") if isinstance(job, dict) else getattr(job, "employer_id", None)
+    try:
+        employer_id = int(employer_id) if employer_id is not None else None
+    except Exception:
+        employer_id = None
+
+    # Authorize: only employer (owner) or admin can view
+    user_role = getattr(current_user, "role", None) or ""
+    if employer_id != current_id and str(user_role).lower() != "admin":
+        flash("You are not authorized to view applicants for this job.", "warning")
+        return redirect(url_for("job_detail", job_id=job_id))
+
+    # Load applications (get_applications_by_job returns rows that include applicant_email, cover_letter_path, resume_path)
+    applications = get_applications_by_job(app.config["DATABASE"], job_id) or []
+
+    return render_template("job_applicants.html", job=job, applications=applications)
 
 @app.route("/jobs")
 @login_required
@@ -788,6 +1052,29 @@ def client_location():
     except Exception as e:
         app.logger.debug("Client location lookup failed for ip %s: %s", ip, e)
         return jsonify(ok=False)
+
+UPLOAD_SUBDIR = "uploads"
+UPLOAD_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "static", UPLOAD_SUBDIR)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+ALLOWED_EXTENSIONS = {"pdf"}
+ALLOWED_MIMES = {"application/pdf"}
+
+def _allowed_file(filename, content_type):
+    """
+    Basic check: allow only .pdf extension and (if provided) PDF mime-type.
+    Returns True if allowed, False otherwise.
+    """
+    if not filename:
+        return False
+    ext = os.path.splitext(filename)[1].lstrip(".").lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return False
+    if content_type:
+        # some clients may provide 'application/pdf; charset=binary' so use 'in'
+        if not any(m in content_type for m in ALLOWED_MIMES):
+            return False
+    return True
 
 
 @app.route("/map")
