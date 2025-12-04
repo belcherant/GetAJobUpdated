@@ -5,56 +5,143 @@
 {% block head %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  .map-wrapper { display:flex; gap:12px; align-items:stretch; min-height:60vh; }
-  #map { flex:1; min-height:520px; height:calc(100vh - 220px); border-radius:8px; border:1px solid rgba(0,0,0,0.06); }
-  .sidebar { width:320px; max-width:34%; }
-  .sidebar .card { padding:8px; border-radius:8px; background:#fff; border:1px solid rgba(0,0,0,0.06); height:100%; overflow:auto; }
+  /* Map page layout */
+  .map-card {
+    max-width:1100px;
+    margin:18px auto;
+    padding:12px;
+  }
+
+  .map-wrapper {
+    display:flex;
+    gap:12px;
+    align-items:stretch;
+    min-height:56vh;
+  }
+
+  /* Map canvas */
+  #map {
+    position: relative;
+    flex:1;
+    min-height:48vh;
+    height:56vh;
+    width:100%;
+    border-radius:8px;
+    border:1px solid rgba(0,0,0,0.06);
+    background:#f3f5f7;
+    overflow:hidden;
+    z-index:0;
+  }
+
+  /* Static-image fallback inside map when tiles fail */
+  #map img.static-fallback {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 0;
+  }
+
+  /* Overlay used for library/tile error messages */
+  #mapOverlay {
+    position: absolute;
+    inset: 0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    pointer-events:none;
+    background: rgba(255,255,255,0.6);
+    z-index: 1000;
+    font-size:1rem;
+    color:#333;
+  }
+  #mapOverlay.hidden { display:none; pointer-events:none; }
+
+  .sidebar {
+    width:320px;
+    max-width:34%;
+    display:flex;
+    flex-direction:column;
+  }
+
+  .sidebar .card {
+    padding:8px;
+    border-radius:8px;
+    background:#fff;
+    border:1px solid rgba(0,0,0,0.06);
+    height:100%;
+    overflow:auto;
+  }
+
   .job-list-mini { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; }
   .job-list-mini a { display:block; padding:8px; border-radius:6px; text-decoration:none; color:var(--text); border:1px solid rgba(0,0,0,0.04); background:#fff; }
   .job-empty { color:var(--muted); padding:12px; }
+
   .map-controls { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; align-items:center; }
   .map-controls input[type="search"], .map-controls select { padding:8px; border-radius:6px; border:1px solid rgba(0,0,0,0.08); }
   .map-controls .btn { padding:8px 10px; border-radius:6px; }
-  .loc-marker { width:14px; height:14px; border-radius:50%; background:var(--primary); border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.12); }
+
   .suggestions-list { position:relative; max-height:200px; overflow:auto; margin-top:6px; border:1px solid rgba(0,0,0,0.06); border-radius:6px; background:#fff; z-index:1000; }
   .suggestions-list button { width:100%; text-align:left; padding:8px; border:0; background:transparent; cursor:pointer; }
+
+  /*
+    Prevent global img rules (e.g., img { max-width:100% }) from breaking Leaflet tiles.
+  */
+  .leaflet-container img {
+    max-width: none !important;
+    display: block !important;
+    image-rendering: auto !important;
+  }
+  .leaflet-container .leaflet-tile {
+    width: 256px !important;
+    height: 256px !important;
+  }
+
   @media (max-width:900px) {
     .map-wrapper { flex-direction:column; }
     .sidebar { width:100%; max-width:100%; }
-    #map { height:420px; }
+    #map { height:420px; min-height:360px; }
   }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="map-wrapper">
-  <div id="map" aria-label="Jobs map"></div>
+<div class="card map-card">
+  <div class="map-wrapper">
+    <div id="map" aria-label="Jobs map">
+      <!-- overlay is hidden by default; shown only for library-missing or persistent tile failure -->
+      <div id="mapOverlay" class="hidden">Loading map…</div>
+    </div>
 
-  <aside class="sidebar">
-    <div class="card">
-      <div class="map-controls" role="toolbar" aria-label="Map controls">
-        <button id="btnLocate" class="btn btn-outline" title="Use browser location">Locate me</button>
+    <aside class="sidebar">
+      <div class="card">
+        <div class="map-controls" role="toolbar" aria-label="Map controls">
+          <button id="btnLocate" class="btn btn-outline" title="Use browser location">Locate me</button>
 
-        <div style="flex:1;">
-          <div class="search-suggestions">
-            <input id="addrSearch" type="search" placeholder="Search address or place..." style="width:100%;" />
-            <div id="suggestions" class="suggestions-list" style="display:none;"></div>
+          <div style="flex:1;">
+            <div class="search-suggestions">
+              <input id="addrSearch" type="search" placeholder="Search address or place..." style="width:100%;" />
+              <div id="suggestions" class="suggestions-list" style="display:none;"></div>
+            </div>
           </div>
+
+          <select id="radiusSelect" title="Radius (miles)">
+            <option value="5">5 mi</option>
+            <option value="10" selected>10 mi</option>
+            <option value="25">25 mi</option>
+            <option value="50">50 mi</option>
+          </select>
+          <button id="btnApply" class="btn btn-primary">Search</button>
         </div>
 
-        <select id="radiusSelect" title="Radius (miles)">
-          <option value="5">5 mi</option>
-          <option value="10" selected>10 mi</option>
-          <option value="25">25 mi</option>
-          <option value="50">50 mi</option>
-        </select>
-        <button id="btnApply" class="btn btn-primary">Search</button>
+        <h3 style="margin-top:6px;">Jobs nearby</h3>
+        <div id="jobsList" style="margin-top:6px;">
+          <div class="job-empty">Locating and loading jobs...</div>
+        </div>
       </div>
-
-      <h3 style="margin-top:6px;">Jobs nearby</h3>
-      <div id="jobsList"><div class="job-empty">Locating and loading jobs...</div></div>
-    </div>
-  </aside>
+    </aside>
+  </div>
 </div>
 {% endblock %}
 
@@ -62,6 +149,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function () {
+  // Helper: escape HTML for popup content
   function escapeHtml(s) {
     if (s === null || s === undefined) return '';
     return String(s).replace(/[&<>"']/g, function (m) {
@@ -75,24 +163,95 @@
   const btnApply = document.getElementById('btnApply');
   const radiusSelect = document.getElementById('radiusSelect');
   const jobsListEl = document.getElementById('jobsList');
+  const mapEl = document.getElementById('map');
+  const mapOverlay = document.getElementById('mapOverlay');
 
   let map, markersLayer, userMarker, radiusCircle;
   let currentCenter = { lat: 39.8283, lng: -98.5795 }; // default US center
   let currentRadius = Number(radiusSelect.value) || 10; // miles
 
+  function showOverlay(msg) {
+    if (!mapOverlay) return;
+    mapOverlay.textContent = msg || '';
+    mapOverlay.classList.remove('hidden');
+  }
+  function hideOverlay() {
+    if (!mapOverlay) return;
+    mapOverlay.classList.add('hidden');
+  }
+
+  // Build a staticmap URL for fallback (single image, not interactive)
+  function staticMapUrl(lat, lon, zoom) {
+    // staticmap.openstreetmap.de has some usage limits but is convenient for quick dev fallback
+    const z = zoom || 4;
+    const size = '1024x512';
+    return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=${z}&size=${size}&markers=${lat},${lon},red-pushpin`;
+  }
+
+  // Append a static fallback image into the map container (removes leaflets layers)
+  function showStaticFallback(lat, lon, zoom) {
+    // remove any existing leaflet map (if present)
+    try {
+      if (map) {
+        map.remove();
+        map = null;
+      }
+    } catch (e) { /* ignore */ }
+
+    // remove any existing fallback img
+    const existing = mapEl.querySelector('img.static-fallback');
+    if (existing) existing.remove();
+
+    const img = document.createElement('img');
+    img.className = 'static-fallback';
+    img.alt = 'Map preview';
+    img.src = staticMapUrl(lat, lon, zoom || 4);
+    // hide overlay (we show the image)
+    hideOverlay();
+    mapEl.appendChild(img);
+  }
+
   function initMapOnce() {
-    if (!window.L || !window.L.map) return;
+    // If Leaflet missing, show overlay and bail
+    if (!window.L || !window.L.map) {
+      console.warn('Leaflet not available');
+      showOverlay('Map library not loaded');
+      // Also try to display a static fallback so the UI isn't blank
+      showStaticFallback(currentCenter.lat, currentCenter.lng, 4);
+      return;
+    }
     if (window.__jobs_map_inited) return;
     window.__jobs_map_inited = true;
 
-    map = L.map('map').setView([currentCenter.lat, currentCenter.lng], 5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    // create the map (use preferCanvas to reduce DOM pressure)
+    map = L.map('map', { preferCanvas: true }).setView([currentCenter.lat, currentCenter.lng], 5);
+
+    // Use configured tile provider if provided by Flask context, otherwise default OSM
+    const tileUrl = '{{ TILE_URL|default("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png") }}';
+    const tileAttr = '{{ TILE_ATTRIBUTION|default("&copy; OpenStreetMap contributors")|e }}';
+
+    const tileOpts = {
+      attribution: tileAttr,
+      maxZoom: 19,
+      detectRetina: false,
+      updateWhenIdle: true,      // reduce requests while dragging/zooming
+      updateWhenZooming: false,
+      keepBuffer: 2
+    };
+
+    // Primary (configured) tiles
+    const primaryTiles = L.tileLayer(tileUrl, tileOpts).addTo(map);
+
+    // Fallback tiles (CartoCDN)
+    const fallbackUrl = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png';
+    const fallbackOpts = { attribution: '&copy; OpenStreetMap contributors & CartoDB', maxZoom: 19 };
+    const fallbackTiles = L.tileLayer(fallbackUrl, fallbackOpts);
 
     markersLayer = L.layerGroup().addTo(map);
 
     userMarker = L.circleMarker([currentCenter.lat, currentCenter.lng], {
       radius: 8,
-      fillColor: window.getComputedStyle(document.documentElement).getPropertyValue('--primary') || '#0ea5a4',
+      fillColor: getComputedStyle(document.documentElement).getPropertyValue('--primary') || '#0ea5a4',
       color: '#fff',
       weight: 2,
       opacity: 1,
@@ -100,18 +259,16 @@
     }).addTo(map);
     userMarker.setStyle({ opacity: 0, fillOpacity: 0 });
 
-    // wire controls
+    // controls wiring
     btnLocate.addEventListener('click', locateAndApply);
     btnApply.addEventListener('click', () => {
       currentRadius = Number(radiusSelect.value) || currentRadius;
-      // If user has been located, use that center; otherwise use map center
       const center = map ? map.getCenter() : {lat: currentCenter.lat, lng: currentCenter.lng};
       currentCenter.lat = center.lat;
       currentCenter.lng = center.lng;
       loadJobsAndRender(currentCenter.lat, currentCenter.lng, currentRadius);
     });
     radiusSelect.addEventListener('change', () => {
-      // update radius immediately if a center exists
       currentRadius = Number(radiusSelect.value) || currentRadius;
       if (currentCenter && currentCenter.lat && currentCenter.lng) {
         loadJobsAndRender(currentCenter.lat, currentCenter.lng, currentRadius);
@@ -129,6 +286,79 @@
       }
       debounceTimer = setTimeout(() => doAddressLookup(q), 300);
     });
+
+    // invalidate once after mount to ensure sizing
+    setTimeout(() => { try { map.invalidateSize(); } catch (e) {} }, 300);
+    let winResizeTimer = null;
+    window.addEventListener('resize', () => {
+      if (winResizeTimer) clearTimeout(winResizeTimer);
+      winResizeTimer = setTimeout(() => { try { map.invalidateSize(); } catch (e) {} }, 200);
+    });
+
+    // Tile error handling and switch to fallback or static image if required.
+    let primaryErrors = 0;
+    const primaryErrorThreshold = 6; // number of tile errors to consider provider failing
+
+    function trySwitchToFallbackOrStatic() {
+      try {
+        if (map && map.hasLayer(primaryTiles)) map.removeLayer(primaryTiles);
+      } catch (e) { /* ignore */ }
+
+      // Try fallback tiles first
+      try {
+        if (!map.hasLayer(fallbackTiles)) {
+          fallbackTiles.addTo(map);
+        }
+      } catch (e) {
+        console.error('fallback tile add failed', e);
+      }
+
+      // If fallback also doesn't load within a short period, replace with static image
+      let fallbackLoaded = false;
+      fallbackTiles.once('load', function () { fallbackLoaded = true; hideOverlay(); try { map.invalidateSize(); } catch (e) {} });
+      fallbackTiles.once('tileerror', function (e) { console.warn('fallback tile error', e); });
+
+      setTimeout(() => {
+        if (!fallbackLoaded) {
+          console.warn('Fallback tiles not loading — showing static fallback image');
+          // show a single static image preview to avoid blank UI and stop tile storms
+          showStaticFallback(currentCenter.lat, currentCenter.lng, 4);
+        }
+      }, 2500);
+    }
+
+    primaryTiles.on('load', function () {
+      hideOverlay();
+      try { map.invalidateSize(); } catch (e) {}
+    });
+
+    primaryTiles.on('tileerror', function (e) {
+      primaryErrors++;
+      console.warn('Primary tile error', primaryErrors, e);
+      // If many primary tileerrors, switch to fallback or static preview
+      if (primaryErrors >= primaryErrorThreshold) {
+        showOverlay('Primary map provider failed — switching to fallback');
+        trySwitchToFallbackOrStatic();
+      }
+    });
+
+    fallbackTiles.on('tileerror', function (e) {
+      console.error('Fallback tile error', e);
+      // Let the static fallback logic handle showing image after timeout
+    });
+
+    // If tiles are very slow, reveal map (don't block UI indefinitely)
+    let tilesLoaded = false;
+    const markLoaded = () => { tilesLoaded = true; hideOverlay(); try { map.invalidateSize(); } catch (e) {} };
+    primaryTiles.once('load', markLoaded);
+    fallbackTiles.once('load', markLoaded);
+
+    setTimeout(() => {
+      if (!tilesLoaded) {
+        console.warn('Tiles not loaded after timeout — revealing map for user interaction.');
+        hideOverlay();
+      }
+    }, 8000);
 
     // initial locate flow
     (async function initialLocate() {
@@ -171,8 +401,7 @@
         currentCenter.lng = lng;
         currentRadius = Number(radiusSelect.value) || currentRadius;
         setUserLocationMarker(lat, lng, true);
-        // prefer centering on user (not fitting to markers)
-        map.setView([lat, lng], 13);
+        map && map.setView([lat, lng], 13);
         await loadJobsAndRender(lat, lng, currentRadius);
         resolve(true);
       }, (err) => {
@@ -185,10 +414,11 @@
 
   function setUserLocationMarker(lat, lng, show=true) {
     if (!userMarker) return;
-    userMarker.setLatLng([lat, lng]);
+    try {
+      userMarker.setLatLng([lat, lng]);
+    } catch (e) { /* ignore */ }
     if (show) {
       userMarker.setStyle({ opacity: 1, fillOpacity: 1 });
-      // draw/update radius circle
       if (radiusCircle) map.removeLayer(radiusCircle);
       radiusCircle = L.circle([lat, lng], { radius: (currentRadius || 10) * 1609.344, color: '#0077ff', opacity: 0.12, weight: 1, fillOpacity: 0.04 }).addTo(map);
     } else {
@@ -217,7 +447,7 @@
           suggestionsEl.innerHTML = '';
           addrSearch.value = item.display_name;
           currentRadius = Number(radiusSelect.value) || currentRadius;
-          map.setView([lat, lon], 13);
+          map && map.setView([lat, lon], 13);
           loadJobsAndRender(lat, lon, currentRadius);
         });
         suggestionsEl.appendChild(btn);
@@ -248,18 +478,21 @@
   }
 
   function renderJobsOnMap(jobs, centerLat=null, centerLng=null) {
+    if (!markersLayer) return;
     markersLayer.clearLayers();
-    if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+    if (radiusCircle) { try { map.removeLayer(radiusCircle); } catch (e) {} radiusCircle = null; }
 
     jobsListEl.innerHTML = '';
     if (!jobs || jobs.length === 0) {
       jobsListEl.innerHTML = '<div class="job-empty">No jobs available.</div>';
-      if (centerLat && centerLng) map.setView([centerLat, centerLng], 11);
+      if (centerLat && centerLng && map) map.setView([centerLat, centerLng], 11);
       return;
     }
 
     let listHtml = '';
     const layers = [];
+    const jobDetailTemplate = '{{ url_for("job_detail", job_id=0) }}';
+
     jobs.forEach(job => {
       const lat = job.lat !== null ? Number(job.lat) : null;
       const lng = job.lng !== null ? Number(job.lng) : null;
@@ -267,29 +500,30 @@
       const popupHtml = '<div><strong>' + escapeHtml(job.title||'') + '</strong>' +
                         '<div style="font-size:12px;color:#666;margin-top:4px;">' + escapeHtml(displayLoc) + (job.distance_miles ? (' • ' + job.distance_miles + ' mi') : '') + '</div>' +
                         '<div style="margin-top:8px;">' + escapeHtml((job.description||'').substring(0,200)) + (job.description && job.description.length > 200 ? '...' : '') + '</div>' +
-                        '<div style="margin-top:6px;"><a href="/job/' + encodeURIComponent(job.id) + '">View job</a> • ' +
+                        '<div style="margin-top:6px;"><a href="' + (jobDetailTemplate.replace('/0','/' + encodeURIComponent(job.id))) + '">View job</a> • ' +
                         '<a href="/messages?other_id=' + encodeURIComponent(job.employer_id) + '">Message Poster</a></div></div>';
-      if (lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng)) {
-        const marker = L.marker([lat, lng]).addTo(markersLayer);
-        marker.bindPopup(popupHtml);
-        layers.push(marker);
+      if (lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng) && markersLayer) {
+        try {
+          const marker = L.marker([lat, lng]).addTo(markersLayer);
+          marker.bindPopup(popupHtml);
+          layers.push(marker);
+        } catch (e) {
+          console.warn('Failed to add marker', e);
+        }
       }
-      listHtml += '<a href="/job/' + encodeURIComponent(job.id) + '"><strong>' + escapeHtml(job.title||'') + '</strong>' +
+      listHtml += '<a href="' + (jobDetailTemplate.replace('/0','/' + encodeURIComponent(job.id))) + '"><strong>' + escapeHtml(job.title||'') + '</strong>' +
                   '<div style="font-size:12px;color:#666;margin-top:4px;">' + escapeHtml(displayLoc) + (job.distance_miles ? (' • ' + job.distance_miles + ' mi') : '') + '</div></a>';
     });
 
     jobsListEl.innerHTML = '<div class="job-list-mini">' + listHtml + '</div>';
 
-    if (centerLat !== null && centerLng !== null) {
-      // If we have user/search center: show radius circle and center map on user
-      radiusCircle = L.circle([centerLat, centerLng], { radius: (currentRadius || 10) * 1609.344, color: '#0077ff', opacity: 0.12, weight: 1, fillOpacity: 0.04 }).addTo(map);
-      // Ensure user marker visible (setUserLocationMarker should have been called already)
-      map.setView([centerLat, centerLng], 13);
-      // If you want to also fit to markers within the radius, you could compute bounds of layers and fit if desired.
-      // We'll keep view centered on user to avoid "zoom to nearest job" behavior.
+    if (centerLat !== null && centerLng !== null && map) {
+      try {
+        radiusCircle = L.circle([centerLat, centerLng], { radius: (currentRadius || 10) * 1609.344, color: '#0077ff', opacity: 0.12, weight: 1, fillOpacity: 0.04 }).addTo(map);
+        map.setView([centerLat, centerLng], 13);
+      } catch (e) {}
     } else {
-      // No center provided — fit to markers so user sees all jobs
-      if (layers.length > 0) {
+      if (layers.length > 0 && map) {
         try {
           const group = L.featureGroup(layers);
           map.fitBounds(group.getBounds().pad(0.12));
