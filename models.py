@@ -123,32 +123,20 @@ def init_db(db_path):
             token TEXT UNIQUE NOT NULL,
             email TEXT NOT NULL,
             purpose TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
+            expires_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """,
     )
 
-    # After ensuring the tables exist, make sure required columns exist (backwards compatible)
+    # Add newer columns if the table schema is older (non-destructive)
     try:
-        _add_column_if_missing(conn, "users", "is_banned INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "users", "banned_until TEXT")
-        _add_column_if_missing(conn, "jobs", "tags TEXT")
-        _add_column_if_missing(conn, "users", "username TEXT")
-        _add_column_if_missing(conn, "users", "first_name TEXT")
-        _add_column_if_missing(conn, "users", "last_name TEXT")
-        _add_column_if_missing(conn, "users", "verified INTEGER NOT NULL DEFAULT 0")
-        cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='index' AND name = 'idx_users_username'")
-        if not cur.fetchone():
-            try:
-                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+        # applications: store uploaded file paths for cover letter and resume (pdfs)
+        _add_column_if_missing(conn, "applications", "cover_letter_path TEXT")
+        _add_column_if_missing(conn, "applications", "resume_path TEXT")
     except sqlite3.OperationalError as e:
-        print("models.init_db: failed to add columns:", e)
-        raise
+        # Log but continue
+        print("models.init_db: failed to add application file columns:", e)
 
     conn.close()
 
@@ -421,34 +409,39 @@ def get_jobs_by_employer(db_path, employer_id):
     return rows
 
 # Applications
-def create_application(db_path, job_id, user_id, cover_letter="", resume_text=""):
+def create_application(db_path, job_id, user_id, cover_letter="", resume_text="", cover_letter_path=None, resume_path=None):
     conn = get_connection(db_path)
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO applications (job_id, user_id, cover_letter, resume_text, created_at) VALUES (?, ?, ?, ?, ?)",
-        (job_id, user_id, cover_letter, resume_text, datetime.utcnow().isoformat()),
+        "INSERT INTO applications (job_id, user_id, cover_letter, resume_text, cover_letter_path, resume_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (job_id, user_id, cover_letter, resume_text, cover_letter_path, resume_path, datetime.utcnow().isoformat()),
     )
     conn.commit()
     app_id = cur.lastrowid
     conn.close()
-    return {"id": app_id, "job_id": job_id, "user_id": user_id}
+    return {"id": app_id, "job_id": job_id, "user_id": user_id, "cover_letter_path": cover_letter_path, "resume_path": resume_path}
 
+# and update get_applications_by_job to include the filename columns:
 def get_applications_by_job(db_path, job_id):
     conn = get_connection(db_path)
     cur = conn.cursor()
     cur.execute(
-        "SELECT a.id, a.job_id, a.user_id, a.cover_letter, a.resume_text, a.created_at, u.email as applicant_email FROM applications a JOIN users u ON u.id = a.user_id WHERE a.job_id = ? ORDER BY a.created_at DESC",
+        "SELECT a.id, a.job_id, a.user_id, a.cover_letter, a.resume_text, a.cover_letter_path, a.resume_path, a.created_at, u.email as applicant_email FROM applications a JOIN users u ON u.id = a.user_id WHERE a.job_id = ? ORDER BY a.created_at DESC",
         (job_id,),
     )
     rows = cur.fetchall()
     conn.close()
     return rows
 
+
 def get_applications_by_user(db_path, user_id):
+    """
+    Returns applications for a given user. Each row includes cover_letter_path and resume_path where present.
+    """
     conn = get_connection(db_path)
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, job_id, user_id, cover_letter, resume_text, created_at FROM applications WHERE user_id = ? ORDER BY created_at DESC",
+        "SELECT id, job_id, user_id, cover_letter, resume_text, cover_letter_path, resume_path, created_at FROM applications WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     )
     rows = cur.fetchall()
