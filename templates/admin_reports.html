@@ -1,0 +1,204 @@
+{% extends "layout.html" %}
+
+{% block title %}Admin - Reported Conversations{% endblock %}
+
+{% block content %}
+<h2>Reported Conversations - Detailed View</h2>
+
+<a href="{{ url_for('admin_dashboard') }}" style="margin-bottom:20px; display:inline-block;">← Back to Dashboard</a>
+
+{% if reports and reports|length > 0 %}
+<div style="margin-top:20px;">
+    <table style="width:100%; border-collapse:collapse;">
+        <thead>
+            <tr style="text-align:left; border-bottom:2px solid #ddd;">
+                <th style="padding:12px;">ID</th>
+                <th style="padding:12px;">Reporter</th>
+                <th style="padding:12px;">Users Involved</th>
+                <th style="padding:12px;">Reason</th>
+                <th style="padding:12px;">Message Snapshot</th>
+                <th style="padding:12px;">Full Conversation</th>
+                <th style="padding:12px;">Status</th>
+                <th style="padding:12px;">Created</th>
+                <th style="padding:12px;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for report in reports %}
+            {% set highlight = request.args.get('highlight', '0') %}
+            {% set highlight_int = highlight|int %}
+            {% if highlight_int == report.id %}
+            <tr style="border-bottom:1px solid #f2f2f2; background-color:#ffffcc;">
+            {% else %}
+            <tr style="border-bottom:1px solid #f2f2f2;">
+            {% endif %}
+                <td style="padding:12px; vertical-align:top;">{{ report.id }}</td>
+                <td style="padding:12px; vertical-align:top;">
+                    <strong>
+                    {% if report.reporter and report.reporter.email %}
+                        {{ report.reporter.email }}
+                    {% else %}
+                        Unknown
+                    {% endif %}
+                    </strong><br>
+                    <small>ID: {{ report.reporter_id }}</small><br>
+                    <a href="{{ url_for('profile', user_id=report.reporter_id) }}">View Profile</a>
+                </td>
+                <td style="padding:12px; vertical-align:top;">
+                    <div style="margin-bottom:8px;">
+                        <strong>User A:</strong><br>
+                        {% if report.user_a_obj and report.user_a_obj.email %}
+                            {{ report.user_a_obj.email }}
+                        {% else %}
+                            {{ report.user_a }}
+                        {% endif %}
+                        <br>
+                        <a href="{{ url_for('profile', user_id=report.user_a) }}">View Profile</a>
+                    </div>
+                    <div>
+                        <strong>User B:</strong><br>
+                        {% if report.user_b_obj and report.user_b_obj.email %}
+                            {{ report.user_b_obj.email }}
+                        {% else %}
+                            {{ report.user_b }}
+                        {% endif %}
+                        <br>
+                        <a href="{{ url_for('profile', user_id=report.user_b) }}">View Profile</a>
+                    </div>
+                </td>
+                <td style="padding:12px; vertical-align:top;">
+                    <div style="background:#f5f5f5; padding:12px; border-radius:6px;">
+                        {% if report.reason %}
+                            {{ report.reason }}
+                        {% else %}
+                            No reason provided
+                        {% endif %}
+                    </div>
+                </td>
+                <td style="padding:12px; vertical-align:top;">
+                    {% if report.message_snapshot %}
+                    <div style="background:#f5f5f5; padding:12px; border-radius:6px; max-height:200px; overflow-y:auto;">
+                        {{ report.message_snapshot }}
+                    </div>
+                    {% else %}
+                    <em>No message snapshot</em>
+                    {% endif %}
+                </td>
+                <td style="padding:12px; vertical-align:top;">
+                  <a href="{{ url_for('admin_conversation_view', user_a_id=report.user_a, user_b_id=report.user_b, report_id=report.id) }}" 
+                      style="color:#0066cc; text-decoration:none;">
+                        View Conversation
+                  </a>
+                </td>
+                <td style="padding:12px; vertical-align:top;">
+                    {% if report.status == 'open' %}
+                    <span style="background: orange; color: white; padding: 6px 12px; border-radius: 4px; display:inline-block;">
+                        {{ report.status }}
+                    </span>
+                    {% else %}
+                    <span style="background: green; color: white; padding: 6px 12px; border-radius: 4px; display:inline-block;">
+                        {{ report.status }}
+                    </span>
+                    {% endif %}
+                </td>
+                <td style="padding:12px; vertical-align:top;">{{ report.created_at }}</td>
+                <td style="padding:12px; vertical-align:top;">
+                    <form method="post" action="{{ url_for('admin_resolve_report', report_id=report.id) }}" 
+                          style="margin-bottom:8px;">
+                        <button type="submit" style="background:#5cb85c;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;">
+                            Mark Resolved
+                        </button>
+                    </form>
+                    <form method="post" action="{{ url_for('admin_ban_user', user_id=report.user_a) }}"
+                          style="margin-bottom:8px;">
+                        <input type="hidden" name="days" value="7">
+                        <button type="submit" style="background:#d9534f;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;">
+                            Ban User A (7d)
+                        </button>
+                    </form>
+                    <form method="post" action="{{ url_for('admin_ban_user', user_id=report.user_b) }}">
+                        <input type="hidden" name="days" value="7">
+                        <button type="submit" style="background:#d9534f;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;width:100%;">
+                            Ban User B (7d)
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div style="text-align:center; padding:40px; background:#f9f9f9; border-radius:8px;">
+    <p style="font-size:1.2em; color:#666;">No reported conversations found.</p>
+    <a href="{{ url_for('admin_dashboard') }}" style="background:#007bff;color:white;padding:8px 16px;border-radius:4px;text-decoration:none;">Back to Dashboard</a>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadConversation(userA, userB, reportId) {
+    var link = document.getElementById('view-conv-' + reportId);
+    var container = document.getElementById('conversation-' + reportId);
+    
+    if (container.style.display === 'none') {
+        container.style.display = 'block';
+        link.textContent = 'Hide Conversation';
+        
+        // Fetch conversation via API
+        fetch('/api/admin/conversation?user_a=' + userA + '&user_b=' + userB)
+            .then(function(response) {
+                return response.json();
+            })
+            .then(function(data) {
+                if (data.ok && data.messages) {
+                    var html = '<div style="background:#f9f9f5; padding:12px; border-radius:6px; max-height:300px; overflow-y:auto;">';
+                    data.messages.forEach(function(msg) {
+                        var isA = msg.sender_id == userA;
+                        var senderName = isA ? 'User A' : 'User B';
+                        var time = new Date(msg.created_at).toLocaleString();
+                        html += '<div style="margin-bottom:12px; padding:8px; background:' + (isA ? '#e3f2fd' : '#f5f5f5') + '; border-radius:6px;">';
+                        html += '<strong>' + senderName + ':</strong><br>';
+                        html += msg.body + '<br>';
+                        html += '<small style="color:#666;">' + time + '</small>';
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<div style="color:#d9534f;">Failed to load conversation</div>';
+                }
+            })
+            .catch(function(error) {
+                console.error('Error loading conversation:', error);
+                container.innerHTML = '<div style="color:#d9534f;">Error loading conversation</div>';
+            });
+    } else {
+        container.style.display = 'none';
+        link.textContent = 'View Conversation';
+    }
+    
+    return false;
+}
+
+// SIMPLE VERSION - NO JINJA2 IN JAVASCRIPT
+document.addEventListener('DOMContentLoaded', function() {
+    // Get the highlight ID from URL using pure JavaScript
+    var urlParams = new URLSearchParams(window.location.search);
+    var highlightId = urlParams.get('highlight');
+    
+    if (highlightId) {
+        var element = document.getElementById('view-conv-' + highlightId);
+        if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            element.style.backgroundColor = '#ffffcc';
+            setTimeout(function() {
+                element.style.backgroundColor = '';
+            }, 2000);
+        }
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,140 @@
+{% extends "layout.html" %}
+
+{% block title %}Admin dashboard{% endblock %}
+
+{% block content %}
+<h2>Admin dashboard</h2>
+
+<!-- Add Reports Section -->
+<div style="margin-bottom: 40px;">
+    <h3>Reported Conversations</h3>
+    {% if reports and reports|length > 0 %}
+    <table style="width:100%; border-collapse:collapse; margin-top:16px;">
+        <thead>
+            <tr style="text-align:left; border-bottom:1px solid #ddd;">
+                <th style="padding:8px;">ID</th>
+                <th style="padding:8px;">Reporter</th>
+                <th style="padding:8px;">Users Involved</th>
+                <th style="padding:8px;">Reason</th>
+                <th style="padding:8px;">Message</th>
+                <th style="padding:8px;">Status</th>
+                <th style="padding:8px;">Created</th>
+                <th style="padding:8px;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for report in reports %}
+            <tr style="border-bottom:1px solid #f2f2f2;">
+                <td style="padding:8px;">{{ report.id }}</td>
+                <td style="padding:8px;">
+                    {{ report.reporter.email if report.reporter else 'Unknown' }}<br>
+                    <small>(ID: {{ report.reporter_id }})</small>
+                </td>
+                <td style="padding:8px;">
+                    User A: {{ report.user_a_obj.email if report.user_a_obj else report.user_a }}<br>
+                    User B: {{ report.user_b_obj.email if report.user_b_obj else report.user_b }}
+                </td>
+                <td style="padding:8px;">{{ report.reason or 'No reason provided' }}</td>
+                <td style="padding:8px;">
+                    {% if report.message_snapshot %}
+                    <details>
+                        <summary>View Message</summary>
+                        <div style="background:#f5f5f5; padding:8px; margin-top:4px; border-radius:4px;">
+                            {{ report.message_snapshot|truncate(100) }}
+                        </div>
+                    </details>
+                    {% else %}
+                    No message snapshot
+                    {% endif %}
+                </td>
+                <td style="padding:8px;">
+                    {% if report.status == 'open' %}
+                    <span style="background: orange; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.85em;">
+                        {{ report.status }}
+                    </span>
+                    {% else %}
+                    <span style="background: green; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.85em;">
+                        {{ report.status }}
+                    </span>
+                    {% endif %}
+                </td>
+                <td style="padding:8px;">{{ report.created_at }}</td>
+                <td style="padding:8px;">
+                    <a href="{{ url_for('admin_reports_page') }}?highlight={{ report.id }}" 
+                       style="margin-right:10px; color:#0066cc;">
+                        View Details
+                    </a>
+                    <br>
+                    <form method="post" action="{{ url_for('admin_resolve_report', report_id=report.id) }}" 
+                          style="display:inline; margin-top:4px;">
+                        <button type="submit" style="background:#5cb85c;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">
+                            Mark Resolved
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No reported conversations found.</p>
+    {% endif %}
+</div>
+
+<p>Manage users below. Use actions on the right to ban/unban or delete an account.</p>
+
+{% if users and users|length > 0 %}
+  <table style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr style="text-align:left; border-bottom:1px solid #ddd;">
+        <th style="padding:8px;">ID</th>
+        <th style="padding:8px;">Email</th>
+        <th style="padding:8px;">Username</th>
+        <th style="padding:8px;">Role</th>
+        <th style="padding:8px;">Verified</th>
+        <th style="padding:8px;">Created</th>
+        <th style="padding:8px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+        <tr style="border-bottom:1px solid #f2f2f2;">
+          <td style="padding:8px;">{{ u.id }}</td>
+          <td style="padding:8px;">{{ u.email }}</td>
+          <td style="padding:8px;">{{ u.username or '' }}</td>
+          <td style="padding:8px;">{{ u.role }}</td>
+          <td style="padding:8px;">{{ 'Yes' if u.verified else 'No' }}</td>
+          <td style="padding:8px;">{{ u.created_at }}</td>
+          <td style="padding:8px;">
+            <a href="{{ url_for('profile', user_id=u.id) }}" style="margin-right:10px;">View</a>
+
+            {% if not u.is_banned %}
+              <form method="post" action="{{ url_for('admin_ban_user', user_id=u.id) }}" style="display:inline;">
+                <input type="hidden" name="days" value="7">
+                <button type="submit" style="background:#d9534f;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;">Ban 7d</button>
+              </form>
+            {% else %}
+              <form method="post" action="{{ url_for('admin_unban_user', user_id=u.id) }}" style="display:inline;">
+                <button type="submit" style="background:#5cb85c;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;">Unban</button>
+              </form>
+            {% endif %}
+
+            <form method="post" action="{{ url_for('admin_delete_user', user_id=u.id) }}" style="display:inline;" onsubmit="return confirm('Delete this user and all their jobs/applications? This cannot be undone.');">
+              <button type="submit" style="background:transparent;border:none;color:#c00;text-decoration:underline;cursor:pointer;margin-left:8px;">Delete</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p>No users found.</p>
+{% endif %}
+
+{% endblock content %}
+
+{% block scripts %}
+<script>
+// nothing fancy here, actions use simple POST forms. You can add AJAX later if you prefer.
+</script>
+{% endblock scripts %}
